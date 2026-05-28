@@ -65,12 +65,24 @@ def calculate_ema(prices, period):
     return round(ema, 5)
 
 def calculate_macd(prices):
-    if len(prices) < 26:
+    """Fixed MACD — real 9-period EMA signal line"""
+    if len(prices) < 35:
         return 0, 0
+    # MACD line = EMA12 - EMA26
     ema12 = calculate_ema(prices, 12)
     ema26 = calculate_ema(prices, 26)
-    macd = ema12 - ema26
-    return round(macd, 6), round(macd * 0.9, 6)
+    macd_line = ema12 - ema26
+
+    # Signal line = 9-period EMA of MACD values
+    macd_values = []
+    for i in range(9):
+        subset = prices[i:]
+        e12 = calculate_ema(subset, 12)
+        e26 = calculate_ema(subset, 26)
+        macd_values.append(e12 - e26)
+    
+    signal_line = sum(macd_values) / len(macd_values)
+    return round(macd_line, 6), round(signal_line, 6)
 
 def calculate_bollinger(prices, period=20):
     if len(prices) < period:
@@ -82,7 +94,7 @@ def calculate_bollinger(prices, period=20):
 
 def get_signal(pair):
     data = get_forex_data(pair)
-    if not data or len(data) < 30:
+    if not data or len(data) < 35:
         return None
     closes = [float(d["close"]) for d in data]
     current = closes[0]
@@ -214,7 +226,6 @@ def check_and_send_signals():
         print("No strong signals this round.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     name = update.effective_user.first_name
     keyboard = [
         [InlineKeyboardButton("🟢 Beginner", callback_data="level_beginner"),
