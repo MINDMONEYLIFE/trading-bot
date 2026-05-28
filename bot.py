@@ -318,7 +318,7 @@ def main():
     check_and_send_signals()
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
-    app = Application.builder().token(TELEGRAM_TOKEN).job_queue(False).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).job_queue(None).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("signals", signals_command))
     app.add_handler(CommandHandler("help", help_command))
