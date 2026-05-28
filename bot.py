@@ -8,9 +8,9 @@ import schedule
 import time
 import threading
 
-TELEGRAM_TOKEN = "8696123868:AAGeNnJY9jZjm1FFgwzfQoAVTL8XP4hN1V8"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID = "@PipAlertProSignals"
-TWELVEDATA_API_KEY = "2cdbcf9285b4490eb9cc69a0db45fe9c"
+TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
