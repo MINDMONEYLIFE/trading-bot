@@ -1,42 +1,31 @@
+import logging
 import requests
+import statistics
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 import schedule
 import time
-from datetime import datetime
-import statistics
+import threading
 
-# ============================================
-# APNI DETAILS
-# ============================================
 TELEGRAM_TOKEN = "8696123868:AAGeNnJY9jZjm1FFgwzfQoAVTL8XP4hN1V8"
 CHANNEL_ID = "@PipAlertProSignals"
 TWELVEDATA_API_KEY = "2cdbcf9285b4490eb9cc69a0db45fe9c"
-# ============================================
 
-PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CAD", "NZD/USD", "USD/CHF"]
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-last_signals = {}
+ASSETS = {
+    "XAU/USD": {"name": "Gold", "emoji": "🥇"},
+    "BTC/USD": {"name": "Bitcoin", "emoji": "₿"},
+    "ETH/USD": {"name": "Ethereum", "emoji": "💎"},
+}
 
-def get_market_session():
-    hour = datetime.utcnow().hour
-    if 8 <= hour < 12:
-        return "🇬🇧 London Session", "HIGH"
-    elif 13 <= hour < 17:
-        return "🇺🇸 New York Session", "HIGH"
-    elif 12 <= hour < 13:
-        return "⚡ London-NY Overlap", "VERY HIGH"
-    elif 0 <= hour < 8:
-        return "🇯🇵 Tokyo Session", "MEDIUM"
-    else:
-        return "🌙 Off Session", "LOW"
+user_profiles = {}
 
 def get_forex_data(pair):
     url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": pair,
-        "interval": "15min",
-        "outputsize": 60,
-        "apikey": TWELVEDATA_API_KEY
-    }
+    params = {"symbol": pair, "interval": "15min", "outputsize": 60, "apikey": TWELVEDATA_API_KEY}
     try:
         response = requests.get(url, params=params, timeout=10)
         data = response.json()
@@ -80,256 +69,262 @@ def calculate_macd(prices):
     ema12 = calculate_ema(prices, 12)
     ema26 = calculate_ema(prices, 26)
     macd = ema12 - ema26
-    signal = macd * 0.9
-    return round(macd, 6), round(signal, 6)
+    return round(macd, 6), round(macd * 0.9, 6)
 
 def calculate_bollinger(prices, period=20):
     if len(prices) < period:
         return prices[0], prices[0], prices[0]
-    slice_prices = prices[:period]
-    mean = sum(slice_prices) / period
-    std = statistics.stdev(slice_prices)
-    upper = mean + (2 * std)
-    lower = mean - (2 * std)
-    return round(upper, 5), round(mean, 5), round(lower, 5)
+    sl = prices[:period]
+    mean = sum(sl) / period
+    std = statistics.stdev(sl)
+    return round(mean + 2*std, 2), round(mean, 2), round(mean - 2*std, 2)
 
 def get_signal(pair):
     data = get_forex_data(pair)
     if not data or len(data) < 30:
         return None
-
     closes = [float(d["close"]) for d in data]
-    highs = [float(d["high"]) for d in data]
-    lows = [float(d["low"]) for d in data]
-    current_price = closes[0]
-
+    current = closes[0]
     rsi = calculate_rsi(closes)
     macd, signal_line = calculate_macd(closes)
     ma20 = sum(closes[:20]) / 20
-    ma50 = sum(closes[:50]) / 50
-    ema9 = calculate_ema(closes[:20], 9)
+    ma50 = sum(closes[:50]) / 50 if len(closes) >= 50 else sum(closes) / len(closes)
     bb_upper, bb_mid, bb_lower = calculate_bollinger(closes)
-
     score = 0
     reasons = []
-
-    # RSI Analysis
     if rsi < 30:
         score += 3
-        reasons.append(f"RSI {rsi} 🔥 Heavily Oversold")
+        reasons.append(f"RSI {rsi} — Heavily Oversold")
     elif rsi < 40:
         score += 2
         reasons.append(f"RSI {rsi} — Oversold Zone")
     elif rsi > 70:
         score -= 3
-        reasons.append(f"RSI {rsi} 🔥 Heavily Overbought")
+        reasons.append(f"RSI {rsi} — Heavily Overbought")
     elif rsi > 60:
         score -= 2
         reasons.append(f"RSI {rsi} — Overbought Zone")
     else:
         reasons.append(f"RSI {rsi} — Neutral")
-
-    # MACD Analysis
     if macd > signal_line and macd > 0:
         score += 2
-        reasons.append("MACD ✅ Strong Bullish")
+        reasons.append("MACD — Strong Bullish")
     elif macd > signal_line:
         score += 1
-        reasons.append("MACD ↗️ Bullish Crossover")
+        reasons.append("MACD — Bullish Crossover")
     elif macd < signal_line and macd < 0:
         score -= 2
-        reasons.append("MACD ❌ Strong Bearish")
+        reasons.append("MACD — Strong Bearish")
     else:
         score -= 1
-        reasons.append("MACD ↘️ Bearish Crossover")
-
-    # Moving Average
-    if current_price > ma20 > ma50:
+        reasons.append("MACD — Bearish Crossover")
+    if current > ma20 > ma50:
         score += 2
-        reasons.append("MA ✅ Strong Uptrend")
-    elif current_price > ma20:
+        reasons.append("MA — Strong Uptrend")
+    elif current > ma20:
         score += 1
-        reasons.append("MA ↗️ Mild Uptrend")
-    elif current_price < ma20 < ma50:
+        reasons.append("MA — Mild Uptrend")
+    elif current < ma20 < ma50:
         score -= 2
-        reasons.append("MA ❌ Strong Downtrend")
+        reasons.append("MA — Strong Downtrend")
     else:
         score -= 1
-        reasons.append("MA ↘️ Mild Downtrend")
-
-    # Bollinger Bands
-    if current_price <= bb_lower:
+        reasons.append("MA — Mild Downtrend")
+    if current <= bb_lower:
         score += 2
-        reasons.append("BB 🎯 Price at Lower Band (BUY Zone)")
-    elif current_price >= bb_upper:
+        reasons.append("Bollinger — Support Level")
+    elif current >= bb_upper:
         score -= 2
-        reasons.append("BB 🎯 Price at Upper Band (SELL Zone)")
-    else:
-        reasons.append(f"BB — Price in Middle Zone")
-
-    # EMA9
-    if current_price > ema9:
-        score += 1
-        reasons.append("EMA9 ✅ Bullish")
-    else:
-        score -= 1
-        reasons.append("EMA9 ❌ Bearish")
-
-    # Determine signal
-    if score >= 4:
+        reasons.append("Bollinger — Resistance Level")
+    if score >= 2:
         direction = "BUY"
-        emoji = "🟢"
         confidence = min(92, 55 + score * 5)
-        pip_distance = current_price * 0.0025
-        stop_loss = round(current_price - pip_distance, 5)
-        take_profit1 = round(current_price + pip_distance * 1.5, 5)
-        take_profit2 = round(current_price + pip_distance * 3, 5)
-    elif score <= -4:
+        pip = current * 0.003
+        sl = round(current - pip, 2)
+        tp1 = round(current + pip * 1.5, 2)
+        tp2 = round(current + pip * 3, 2)
+    elif score <= -2:
         direction = "SELL"
-        emoji = "🔴"
         confidence = min(92, 55 + abs(score) * 5)
-        pip_distance = current_price * 0.0025
-        stop_loss = round(current_price + pip_distance, 5)
-        take_profit1 = round(current_price - pip_distance * 1.5, 5)
-        take_profit2 = round(current_price - pip_distance * 3, 5)
+        pip = current * 0.003
+        sl = round(current + pip, 2)
+        tp1 = round(current - pip * 1.5, 2)
+        tp2 = round(current - pip * 3, 2)
     else:
         return None
+    return {"pair": pair, "direction": direction, "price": round(current, 2),
+            "sl": sl, "tp1": tp1, "tp2": tp2, "rsi": rsi,
+            "confidence": confidence, "reasons": reasons[:4], "score": score}
 
-    return {
-        "pair": pair,
-        "direction": direction,
-        "emoji": emoji,
-        "price": round(current_price, 5),
-        "stop_loss": stop_loss,
-        "take_profit1": take_profit1,
-        "take_profit2": take_profit2,
-        "rsi": rsi,
-        "confidence": confidence,
-        "reasons": reasons[:4],
-        "score": score
-    }
+def format_signal(signal, asset_info, user_level="intermediate"):
+    now = datetime.now().strftime('%d %b | %H:%M')
+    stars = "⭐" * (signal['confidence'] // 20)
+    emoji = "🟢" if signal['direction'] == "BUY" else "🔴"
+    if user_level == "beginner":
+        explanation = "📝 Simple Guide:\n- Entry pe buy/sell karo\n- Stop Loss zaroor lagao\n- Max 1-2% capital lagao"
+    elif user_level == "expert":
+        explanation = f"📊 Technical:\n- Score: {signal['score']}/10\n- RSI: {signal['rsi']}"
+    else:
+        explanation = "Always use Stop Loss. Max 1-2% risk per trade."
+    msg = f"""{emoji} <b>{signal['direction']} — {asset_info['emoji']} {asset_info['name']}</b>
+━━━━━━━━━━━━━━━━━━━━
+💰 <b>Entry:</b> <code>${signal['price']}</code>
+🛑 <b>Stop Loss:</b> <code>${signal['sl']}</code>
+🎯 <b>TP1:</b> <code>${signal['tp1']}</code>
+🎯 <b>TP2:</b> <code>${signal['tp2']}</code>
+📊 <b>Analysis:</b>
+{chr(10).join(['- ' + r for r in signal['reasons']])}
+{explanation}
+💪 <b>Confidence:</b> {signal['confidence']}% {stars}
+🕐 <b>Time:</b> {now}
+━━━━━━━━━━━━━━━━━━━━
+🚀 @PipAlertProSignals"""
+    return msg
 
-def send_telegram_message(message):
+def send_to_channel(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": CHANNEL_ID, "text": message, "parse_mode": "HTML"}
     try:
         response = requests.post(url, json=payload, timeout=10)
         return response.json()
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return None
 
-def format_signal_message(signal):
-    session_name, session_strength = get_market_session()
-    now = datetime.now().strftime('%d %b %Y | %H:%M')
+last_signals = {}
 
-    stars = "⭐" * (signal['confidence'] // 20)
-
-    msg = f"""
-╔══════════════════════╗
-   {signal['emoji']} <b>{signal['direction']} SIGNAL</b>
-╚══════════════════════╝
-
-💱 <b>Pair:</b> {signal['pair']}
-💰 <b>Entry Price:</b> <code>{signal['price']}</code>
-🛑 <b>Stop Loss:</b> <code>{signal['stop_loss']}</code>
-🎯 <b>TP 1:</b> <code>{signal['take_profit1']}</code>
-🎯 <b>TP 2:</b> <code>{signal['take_profit2']}</code>
-
-📊 <b>Analysis:</b>
-{chr(10).join(['▫️ ' + r for r in signal['reasons']])}
-
-💪 <b>Confidence:</b> {signal['confidence']}% {stars}
-📍 <b>Session:</b> {session_name}
-⚡ <b>Volatility:</b> {session_strength}
-⏰ <b>Timeframe:</b> 15 Minutes
-🕐 <b>Time:</b> {now}
-
-⚠️ <i>Always use proper risk management. Never risk more than 1-2% per trade.</i>
-━━━━━━━━━━━━━━━━━━━━━
-🚀 <b>@PipAlertProSignals</b>
-"""
-    return msg
-
-def send_signals():
-    print(f"\n[{datetime.now().strftime('%H:%M')}] Scanning {len(PAIRS)} pairs...")
-    session_name, _ = get_market_session()
-    print(f"Session: {session_name}")
-    signals_sent = 0
-
-    for pair in PAIRS:
+def check_and_send_signals():
+    print(f"[{datetime.now().strftime('%H:%M')}] Scanning assets...")
+    sent = 0
+    for pair, asset_info in ASSETS.items():
         signal = get_signal(pair)
         if signal:
-            pair_key = f"{pair}_{signal['direction']}"
-            last_time = last_signals.get(pair_key, 0)
-            if time.time() - last_time < 3600:
-                print(f"{pair}: Signal already sent recently, skipping...")
+            key = f"{pair}_{signal['direction']}"
+            if time.time() - last_signals.get(key, 0) < 3600:
                 continue
-
-            print(f"🔥 SIGNAL FOUND: {pair} — {signal['direction']} (Score: {signal['score']}, Confidence: {signal['confidence']}%)")
-            message = format_signal_message(signal)
-            result = send_telegram_message(message)
+            msg = format_signal(signal, asset_info)
+            result = send_to_channel(msg)
             if result and result.get("ok"):
-                print(f"✅ Signal sent for {pair}!")
-                last_signals[pair_key] = time.time()
-                signals_sent += 1
+                print(f"Signal sent: {asset_info['name']} {signal['direction']}")
+                last_signals[key] = time.time()
+                sent += 1
             time.sleep(2)
-        else:
-            print(f"{pair}: No strong signal")
         time.sleep(1)
+    if sent == 0:
+        print("No strong signals this round.")
 
-    if signals_sent == 0:
-        print("No strong signals this round — waiting...")
-    else:
-        print(f"\n✅ {signals_sent} signal(s) sent!")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    name = update.effective_user.first_name
+    keyboard = [
+        [InlineKeyboardButton("🟢 Beginner", callback_data="level_beginner"),
+         InlineKeyboardButton("🔵 Intermediate", callback_data="level_intermediate"),
+         InlineKeyboardButton("🔴 Expert", callback_data="level_expert")]
+    ]
+    await update.message.reply_text(
+        f"👋 <b>Welcome {name}!</b>\n\n🚀 <b>PipAlert Pro</b>\n\nApna experience batao:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-def send_startup_message():
-    session_name, session_strength = get_market_session()
-    msg = f"""
-🚀 <b>PipAlert Pro Forex Signals</b>
-<b>━━━━━━━━━━━━━━━━━━━━━</b>
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    data = query.data
+    if user_id not in user_profiles:
+        user_profiles[user_id] = {}
+    if data.startswith("level_"):
+        level = data.replace("level_", "")
+        user_profiles[user_id]["level"] = level
+        keyboard = [
+            [InlineKeyboardButton("😊 Low", callback_data="risk_low"),
+             InlineKeyboardButton("⚡ Medium", callback_data="risk_medium"),
+             InlineKeyboardButton("🔥 High", callback_data="risk_high")]
+        ]
+        await query.edit_message_text(
+            f"✅ Level: <b>{level.capitalize()}</b>\n\nRisk tolerance?",
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("risk_"):
+        risk = data.replace("risk_", "")
+        user_profiles[user_id]["risk"] = risk
+        keyboard = [
+            [InlineKeyboardButton("💵 $100-500", callback_data="invest_small"),
+             InlineKeyboardButton("💰 $500-2000", callback_data="invest_medium"),
+             InlineKeyboardButton("🏦 $2000+", callback_data="invest_large")]
+        ]
+        await query.edit_message_text(
+            f"✅ Risk: <b>{risk.capitalize()}</b>\n\nInvestment amount?",
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("invest_"):
+        invest = data.replace("invest_", "")
+        user_profiles[user_id]["invest"] = invest
+        keyboard = [
+            [InlineKeyboardButton("🥇 Gold", callback_data="asset_gold"),
+             InlineKeyboardButton("₿ Bitcoin", callback_data="asset_btc"),
+             InlineKeyboardButton("💎 Ethereum", callback_data="asset_eth")],
+            [InlineKeyboardButton("📊 Sab Assets", callback_data="asset_all")]
+        ]
+        await query.edit_message_text(
+            f"✅ Investment: <b>{invest.capitalize()}</b>\n\nAsset choose karo:",
+            parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+    elif data.startswith("asset_"):
+        asset = data.replace("asset_", "")
+        user_profiles[user_id]["asset"] = asset
+        profile = user_profiles[user_id]
+        await query.edit_message_text(
+            f"🎉 <b>Profile Complete!</b>\n\n"
+            f"Level: {profile.get('level','').capitalize()}\n"
+            f"Risk: {profile.get('risk','').capitalize()}\n"
+            f"Asset: {asset.capitalize()}\n\n"
+            f"✅ Signals shuru!\n\n"
+            f"/signals — Latest signals\n"
+            f"/help — Help\n\n"
+            f"🚀 @PipAlertProSignals",
+            parse_mode="HTML")
 
-✅ <b>Bot is LIVE and Running!</b>
+async def signals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    profile = user_profiles.get(user_id, {})
+    level = profile.get("level", "intermediate")
+    await update.message.reply_text("⏳ Checking signals...", parse_mode="HTML")
+    found = False
+    for pair, asset_info in ASSETS.items():
+        signal = get_signal(pair)
+        if signal:
+            msg = format_signal(signal, asset_info, level)
+            await update.message.reply_text(msg, parse_mode="HTML")
+            found = True
+            time.sleep(1)
+    if not found:
+        await update.message.reply_text(
+            "📊 <b>Abhi koi strong signal nahi hai.</b>\n\n15 minute mein check karo!\n\n🚀 @PipAlertProSignals",
+            parse_mode="HTML")
 
-📊 <b>Monitoring Pairs:</b>
-EUR/USD | GBP/USD | USD/JPY
-AUD/USD | USD/CAD | NZD/USD | USD/CHF
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📚 <b>PipAlert Pro Help</b>\n\n/start — Setup\n/signals — Signals\n/help — Help\n\n"
+        "🟢 BUY — Khareeedo\n🔴 SELL — Becho\n🎯 TP — Target\n🛑 SL — Stop Loss\n\n"
+        "⚠️ Max 1-2% risk per trade!\n\n🚀 @PipAlertProSignals",
+        parse_mode="HTML")
 
-⚙️ <b>Analysis Method:</b>
-▫️ RSI (Relative Strength Index)
-▫️ MACD (Moving Average Convergence)
-▫️ Bollinger Bands
-▫️ EMA 9, MA 20, MA 50
-
-⏰ <b>Signal Frequency:</b> Every 15 Minutes
-📍 <b>Current Session:</b> {session_name}
-⚡ <b>Market Activity:</b> {session_strength}
-
-⚠️ <i>Trade responsibly. Past signals do not guarantee future results.</i>
-━━━━━━━━━━━━━━━━━━━━━
-🚀 <b>@PipAlertProSignals</b>
-"""
-    send_telegram_message(msg)
-    print("✅ Startup message sent!")
-
-if __name__ == "__main__":
-    print("=" * 50)
-    print("  PipAlert Pro — Professional Forex Bot v2.0")
-    print("=" * 50)
-    print("Bot starting...")
-
-    send_startup_message()
-    send_signals()
-
-    schedule.every(15).minutes.do(send_signals)
-
-    print("\n✅ Bot is running! Signals every 15 minutes.")
-    print("Press Ctrl+C to stop.\n")
-
+def run_scheduler():
+    schedule.every(15).minutes.do(check_and_send_signals)
     while True:
         schedule.run_pending()
         time.sleep(30)
+
+def main():
+    print("PipAlert Pro — Interactive Bot v3.0")
+    check_and_send_signals()
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("signals", signals_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    print("Bot running! Press Ctrl+C to stop")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
