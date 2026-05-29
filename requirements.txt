@@ -2,3 +2,6 @@ python-telegram-bot[all]==21.0.1
 requests
 schedule
 statistics
+mplfinance
+matplotlib
+pandas
