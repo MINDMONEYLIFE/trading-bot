@@ -223,174 +223,162 @@ def is_market_open(pair):
 
 def generate_chart(pair, interval, signal):
     try:
-        params = {"symbol":pair,"interval":interval,"outputsize":50,"apikey":TWELVEDATA_API_KEY}
+        import mplfinance as mpf
+
+        params = {"symbol": pair, "interval": interval, "outputsize": 60, "apikey": TWELVEDATA_API_KEY}
         r    = requests.get("https://api.twelvedata.com/time_series", params=params, timeout=15)
         data = r.json()
         if "values" not in data: return None
+
         vals = list(reversed(data["values"][:50]))
         df   = pd.DataFrame(vals)
         df["datetime"] = pd.to_datetime(df["datetime"])
         df.set_index("datetime", inplace=True)
         for col in ["open","high","low","close"]:
-            if col in df.columns: df[col] = df[col].astype(float)
+            df[col] = df[col].astype(float)
+        df.index.name = "Date"
 
         # ── Indicators ──
-        if len(df) >= 20:
-            df["ma20"]  = df["close"].rolling(20).mean()
-            df["ma9"]   = df["close"].rolling(9).mean()
-            df["std"]   = df["close"].rolling(20).std()
-            df["bb_up"] = df["ma20"] + 2*df["std"]
-            df["bb_lo"] = df["ma20"] - 2*df["std"]
+        df["ma9"]  = df["close"].rolling(9).mean()
+        df["ma20"] = df["close"].rolling(20).mean()
+        df["std"]  = df["close"].rolling(20).std()
+        df["bb_up"]= df["ma20"] + 2 * df["std"]
+        df["bb_lo"]= df["ma20"] - 2 * df["std"]
+
+        # RSI
         delta = df["close"].diff()
         gain  = delta.clip(lower=0).rolling(14).mean()
         loss  = (-delta.clip(upper=0)).rolling(14).mean()
         df["rsi"] = 100 - (100 / (1 + gain / loss))
 
-        # ── Layout ──
-        BG    = "#131722"   # TradingView dark bg
+        # ── TradingView Color Theme ──
+        BG    = "#131722"
         GRID  = "#1e222d"
         TEXT  = "#b2b5be"
         GREEN = "#26a69a"
         RED   = "#ef5350"
-        BLUE  = "#2962ff"
-        GOLD  = "#ffa500"
-        WHITE = "#d1d4dc"
 
-        fig = plt.figure(figsize=(14, 8), facecolor=BG)
-        gs  = fig.add_gridspec(3, 1, height_ratios=[4, 1, 1.2], hspace=0)
-        ax1 = fig.add_subplot(gs[0])   # Candles
-        ax2 = fig.add_subplot(gs[1])   # MACD-style (close diff)
-        ax3 = fig.add_subplot(gs[2])   # RSI
+        tv_style = mpf.make_mpf_style(
+            base_mpf_style="nightclouds",
+            facecolor=BG,
+            figcolor=BG,
+            gridcolor=GRID,
+            gridstyle="-",
+            gridaxis="both",
+            edgecolor=GRID,
+            y_on_right=True,
+            rc={
+                "axes.labelcolor": TEXT,
+                "axes.edgecolor":  GRID,
+                "xtick.color":     TEXT,
+                "ytick.color":     TEXT,
+                "font.size":       8,
+                "figure.facecolor": BG,
+                "axes.facecolor":   BG,
+            },
+            marketcolors=mpf.make_marketcolors(
+                up=GREEN, down=RED,
+                edge={"up": GREEN, "down": RED},
+                wick={"up": GREEN, "down": RED},
+                volume={"up": GREEN, "down": RED},
+                ohlc="i",
+                alpha=0.9,
+            ),
+        )
 
-        for ax in [ax1, ax2, ax3]:
-            ax.set_facecolor(BG)
-            ax.tick_params(colors=TEXT, labelsize=7, length=2)
-            for sp in ax.spines.values():
-                sp.set_color(GRID)
-            ax.yaxis.set_label_position("right")
-            ax.yaxis.tick_right()
-            ax.grid(True, color=GRID, linewidth=0.4, alpha=0.6)
-
-        x = list(range(len(df)))
-
-        # ── Candlesticks ──
+        # ── Additional plots (overlays + RSI panel) ──
         candle_min = df["low"].min()
         candle_max = df["high"].max()
         rng        = candle_max - candle_min
-        pad        = rng * 0.12
 
-        for i, (_, row) in enumerate(df.iterrows()):
-            is_bull = row["close"] >= row["open"]
-            body_color  = GREEN if is_bull else RED
-            wick_color  = GREEN if is_bull else RED
-            body_h = max(abs(row["close"] - row["open"]), rng * 0.001)
-            body_b = min(row["open"], row["close"])
-            # Wick
-            ax1.plot([i, i], [row["low"], row["high"]],
-                     color=wick_color, linewidth=0.9, zorder=2, solid_capstyle="round")
-            # Body
-            rect = plt.Rectangle((i - 0.35, body_b), 0.7, body_h,
-                                  color=body_color, alpha=0.9, zorder=3)
-            ax1.add_patch(rect)
-
-        # ── Bollinger Bands ──
-        if "bb_up" in df.columns:
-            ax1.plot(x, df["bb_up"], color="#5d9cf5", linewidth=0.8,
-                     linestyle="--", alpha=0.6, label="BB Upper")
-            ax1.plot(x, df["ma20"],  color=GOLD,     linewidth=1.0,
-                     alpha=0.8, label="MA20")
-            ax1.plot(x, df["bb_lo"], color="#5d9cf5", linewidth=0.8,
-                     linestyle="--", alpha=0.6, label="BB Lower")
-            ax1.fill_between(x, df["bb_up"], df["bb_lo"],
-                             alpha=0.03, color="#5d9cf5")
-        if "ma9" in df.columns:
-            ax1.plot(x, df["ma9"], color="#ff6d00", linewidth=0.7,
-                     alpha=0.7, label="MA9")
-
-        # ── Y-axis tight around candles ──
-        y_min = candle_min - pad
-        y_max = candle_max + pad
-        ax1.set_ylim(y_min, y_max)
-        ax1.set_xlim(-1, len(df) + 4)
-
-        # ── Entry / SL / TP lines ──
-        last = len(df) - 1
-        off  = rng * 0.008
-        levels = [
-            (signal["price"], GREEN,    "-",  1.4, f"ENTRY  ${signal['price']}"),
-            (signal["sl"],    RED,      "--", 1.1, f"SL  ${signal['sl']}"),
-            (signal["tp1"],   "#00bcd4",":",  1.0, f"TP1  ${signal['tp1']}"),
-            (signal["tp2"],   "#00bcd4",":",  0.8, f"TP2  ${signal['tp2']}"),
+        add_plots = [
+            mpf.make_addplot(df["bb_up"], color="#5d9cf5", width=0.8,
+                             linestyle="--", alpha=0.7, panel=0),
+            mpf.make_addplot(df["ma20"],  color="#ffa500", width=1.0,
+                             alpha=0.9, panel=0),
+            mpf.make_addplot(df["bb_lo"], color="#5d9cf5", width=0.8,
+                             linestyle="--", alpha=0.7, panel=0),
+            mpf.make_addplot(df["ma9"],   color="#ff6d00", width=0.8,
+                             alpha=0.8, panel=0),
+            mpf.make_addplot(df["rsi"],   color="#ce93d8", width=1.2,
+                             panel=1, ylabel="RSI",
+                             ylim=(0, 100)),
         ]
-        for price, color, ls, lw, label in levels:
-            ax1.axhline(price, color=color, linewidth=lw,
-                        linestyle=ls, alpha=0.9, zorder=5)
-            # Label on right side
-            y_pos = price + off if price >= signal["price"] else price - off
-            va    = "bottom" if price >= signal["price"] else "top"
-            ax1.text(len(df) + 0.3, price, label,
-                     color=color, fontsize=7.5, va="center",
-                     fontweight="bold",
-                     bbox=dict(boxstyle="round,pad=0.2", facecolor=BG,
-                               edgecolor=color, alpha=0.8, linewidth=0.5))
 
-        # ── Title bar ──
+        # ── Entry / SL / TP horizontal lines ──
+        hlines_prices = [signal["price"], signal["sl"], signal["tp1"], signal["tp2"]]
+        hlines_colors = [GREEN, RED, "#00bcd4", "#00bcd4"]
+        hlines_styles = ["-", "--", ":", ":"]
+        hlines_widths = [1.4, 1.1, 1.0, 0.8]
+
         tf_label  = TIMEFRAMES.get(interval, {}).get("label", interval)
         asset     = ASSETS.get(pair, {})
-        dir_color = GREEN if signal["direction"] == "BUY" else RED
         dir_label = "▲ BUY" if signal["direction"] == "BUY" else "▼ SELL"
-        ax1.set_title(
-            f"  {asset.get('emoji','')} {asset.get('name', pair)}  ({pair})   |   {tf_label}   |   {dir_label}   |   Conf: {signal['confidence']}%",
-            color=dir_color, fontsize=10.5, fontweight="bold",
-            loc="left", pad=10,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor="#1e222d",
-                      edgecolor=dir_color, alpha=0.9, linewidth=0.8))
+        title     = f"{asset.get('emoji','')} {asset.get('name',pair)} ({pair})  |  {tf_label}  |  {dir_label}  |  Confidence: {signal['confidence']}%"
 
-        legend = ax1.legend(fontsize=7, loc="upper left",
-                            facecolor="#1e222d", edgecolor=GRID,
-                            labelcolor=TEXT, framealpha=0.9)
-        ax1.set_xticks([])
-        ax1.set_ylabel("Price", color=TEXT, fontsize=8)
+        buf = BytesIO()
+        fig, axes = mpf.plot(
+            df,
+            type="candle",
+            style=tv_style,
+            title=title,
+            figsize=(14, 9),
+            addplot=add_plots,
+            hlines=dict(
+                hlines=hlines_prices,
+                colors=hlines_colors,
+                linestyle=hlines_styles,
+                linewidths=hlines_widths,
+                alpha=0.9,
+            ),
+            panel_ratios=(4, 1.5),
+            tight_layout=True,
+            returnfig=True,
+            warn_too_much_data=1000,
+        )
 
-        # ── Momentum (close diff) ──
-        diff = df["close"].diff()
-        colors_diff = [GREEN if v >= 0 else RED for v in diff]
-        ax2.bar(x, diff, color=colors_diff, width=0.7, alpha=0.7)
-        ax2.axhline(0, color=GRID, linewidth=0.5)
-        ax2.set_ylabel("Δ", color=TEXT, fontsize=8)
-        ax2.set_xticks([])
+        # ── Labels for Entry/SL/TP on right side ──
+        ax_main = axes[0]
+        labels = [
+            (signal["price"], GREEN,    f" ENTRY ${signal['price']}"),
+            (signal["sl"],    RED,      f" SL ${signal['sl']}"),
+            (signal["tp1"],   "#00bcd4",f" TP1 ${signal['tp1']}"),
+            (signal["tp2"],   "#00bcd4",f" TP2 ${signal['tp2']}"),
+        ]
+        x_right = len(df) - 1
+        for price, color, label in labels:
+            ax_main.annotate(
+                label, xy=(x_right, price),
+                xytext=(5, 0), textcoords="offset points",
+                color=color, fontsize=8, fontweight="bold",
+                va="center",
+                bbox=dict(boxstyle="round,pad=0.2", facecolor=BG,
+                          edgecolor=color, alpha=0.85, linewidth=0.6),
+            )
 
-        # ── RSI ──
-        ax3.plot(x, df["rsi"], color="#ce93d8", linewidth=1.1)
-        ax3.axhline(70, color=RED,   linewidth=0.6, linestyle="--", alpha=0.6)
-        ax3.axhline(30, color=GREEN, linewidth=0.6, linestyle="--", alpha=0.6)
-        ax3.axhline(50, color=GRID,  linewidth=0.4, linestyle=":",  alpha=0.5)
-        ax3.fill_between(x, df["rsi"], 70, where=df["rsi"] >= 70,
-                         alpha=0.15, color=RED)
-        ax3.fill_between(x, df["rsi"], 30, where=df["rsi"] <= 30,
-                         alpha=0.15, color=GREEN)
-        ax3.set_ylim(0, 100)
-        ax3.set_yticks([30, 50, 70])
-        ax3.set_ylabel("RSI", color=TEXT, fontsize=8)
+        # ── RSI overbought/oversold fill ──
+        ax_rsi = axes[2]
+        x_vals = list(range(len(df)))
+        rsi_vals = df["rsi"].values
+        ax_rsi.fill_between(x_vals, rsi_vals, 70,
+                            where=[v >= 70 for v in rsi_vals],
+                            alpha=0.15, color=RED)
+        ax_rsi.fill_between(x_vals, rsi_vals, 30,
+                            where=[v <= 30 for v in rsi_vals],
+                            alpha=0.15, color=GREEN)
+        ax_rsi.axhline(70, color=RED,   linewidth=0.6, linestyle="--", alpha=0.5)
+        ax_rsi.axhline(30, color=GREEN, linewidth=0.6, linestyle="--", alpha=0.5)
+        ax_rsi.axhline(50, color=GRID,  linewidth=0.4, linestyle=":",  alpha=0.4)
 
-        # ── X-axis time labels ──
-        step = max(1, len(df) // 7)
-        ax3.set_xticks(range(0, len(df), step))
-        ax3.set_xticklabels(
-            [df.index[i].strftime("%H:%M") for i in range(0, len(df), step)],
-            fontsize=6.5, color=TEXT)
-
-        # ── Timestamp + watermark ──
+        # ── Watermark ──
         now_str = datetime.utcnow().strftime("%d %b %Y  %H:%M UTC")
         fig.text(0.01, 0.01, f"PipAlert Pro  •  {now_str}",
                  color="#4a4e5a", fontsize=7, va="bottom")
         fig.text(0.99, 0.01, "@PipAlertProSignals",
                  ha="right", va="bottom", color="#4a4e5a",
-                 fontsize=7.5, style="italic")
+                 fontsize=8, style="italic")
 
-        plt.tight_layout(pad=0.3)
-        buf = BytesIO()
-        plt.savefig(buf, format="png", dpi=130,
+        fig.savefig(buf, format="png", dpi=130,
                     bbox_inches="tight", facecolor=BG)
         buf.seek(0)
         plt.close(fig)
