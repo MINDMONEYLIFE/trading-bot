@@ -433,6 +433,8 @@ Write only the analysis, no headers or labels. Keep it under 60 words."""
     except Exception as e:
         logger.error(f"Claude API error: {e}")
         return None
+
+def get_forex_data(pair, interval="15min"):
     params={"symbol":pair,"interval":interval,"outputsize":60,"apikey":TWELVEDATA_API_KEY}
     try:
         r=requests.get("https://api.twelvedata.com/time_series",params=params,timeout=10)
