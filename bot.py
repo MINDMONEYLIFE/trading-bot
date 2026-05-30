@@ -246,15 +246,27 @@ def generate_chart(pair, interval, signal):
             ax1.plot(x,df["ma20"], color="#d29922",linewidth=0.9,alpha=0.8,label="MA20")
             ax1.plot(x,df["bb_lo"],color="#58a6ff",linewidth=0.8,linestyle="--",alpha=0.7,label="BB Lower")
             ax1.fill_between(x,df["bb_up"],df["bb_lo"],alpha=0.04,color="#58a6ff")
-        rng=df["high"].max()-df["low"].min(); off=rng*0.005; last=len(df)-1
-        ax1.axhline(signal["price"],color="#3fb950",linewidth=1.2,linestyle="-", alpha=0.9,zorder=4)
-        ax1.axhline(signal["sl"],   color="#f85149",linewidth=1.0,linestyle="--",alpha=0.8,zorder=4)
-        ax1.axhline(signal["tp1"],  color="#58a6ff",linewidth=1.0,linestyle=":", alpha=0.8,zorder=4)
-        ax1.axhline(signal["tp2"],  color="#58a6ff",linewidth=0.8,linestyle=":", alpha=0.6,zorder=4)
-        ax1.text(last+0.5,signal["price"]+off,f" Entry ${signal['price']}", color="#3fb950",fontsize=7,va="bottom")
-        ax1.text(last+0.5,signal["sl"]-off,   f" SL ${signal['sl']}",      color="#f85149",fontsize=7,va="top")
-        ax1.text(last+0.5,signal["tp1"]+off,  f" TP1 ${signal['tp1']}",    color="#58a6ff",fontsize=7,va="bottom")
-        ax1.text(last+0.5,signal["tp2"]+off,  f" TP2 ${signal['tp2']}",    color="#58a6ff",fontsize=7,va="bottom",alpha=0.8)
+        # ── Y-axis: tight around candles ──
+        candle_min = df["low"].min()
+        candle_max = df["high"].max()
+        padding    = (candle_max - candle_min) * 0.15
+        y_min      = candle_min - padding
+        y_max      = candle_max + padding
+        ax1.set_ylim(y_min, y_max)
+
+        rng=candle_max-candle_min; off=rng*0.01; last=len(df)-1
+
+        # Draw Entry/SL/TP only if within visible range
+        all_levels = {
+            "entry": (signal["price"], "#3fb950", "-",  1.2, f" Entry ${signal['price']}"),
+            "sl":    (signal["sl"],    "#f85149", "--", 1.0, f" SL ${signal['sl']}"),
+            "tp1":   (signal["tp1"],   "#58a6ff", ":",  1.0, f" TP1 ${signal['tp1']}"),
+            "tp2":   (signal["tp2"],   "#58a6ff", ":",  0.8, f" TP2 ${signal['tp2']}"),
+        }
+        for key,(price,color,ls,lw,label) in all_levels.items():
+            ax1.axhline(price,color=color,linewidth=lw,linestyle=ls,alpha=0.85,zorder=4)
+            if y_min <= price <= y_max:
+                ax1.text(last+0.5,price+off,label,color=color,fontsize=7,va="bottom")
         tf_label=TIMEFRAMES.get(interval,{}).get("label",interval)
         dc="#3fb950" if signal["direction"]=="BUY" else "#f85149"
         ax1.set_title(f"  {ASSETS.get(pair,{}).get('emoji','')} {ASSETS.get(pair,{}).get('name',pair)} ({pair})  •  {tf_label}  •  ▶ {signal['direction']}",
