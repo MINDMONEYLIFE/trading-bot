@@ -865,7 +865,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tf=TIMEFRAMES.get(interval,{})
         acc=user_profiles[uid].get("account"); rp=user_profiles[uid].get("risk_pct"); rr=user_profiles[uid].get("rr_ratio")
         selected=user_profiles[uid].get("assets","ALL")
-        await query.edit_message_text(f"『 ⏳ <b>SCANNING</b> ⏳ 』\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n🔍 Analyzing <b>{tf.get('label')}</b>...\n📊 Generating charts...\n⚡ Please wait...",parse_mode="HTML")
+        await query.edit_message_text(f"『 ⏳ <b>SCANNING</b> ⏳ 』\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n🔍 Analyzing <b>{tf.get('label')}</b>...\n⚡ Please wait...",parse_mode="HTML")
         pairs=[(selected,ASSETS[selected])] if selected!="ALL" and selected in ASSETS else list(ASSETS.items())
         found=False
         for pair,asset_info in pairs:
@@ -877,18 +877,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
             sig=get_signal(pair,interval)
             if sig:
-                msg=format_signal(sig,asset_info,interval,acc,rp,rr)
+                # 1) Signal text PEHLE bhejo — fast!
                 tv_link=get_tv_link(pair,interval)
                 kb=InlineKeyboardMarkup([[InlineKeyboardButton("📈 Live TradingView Chart",url=tv_link)]])
+                msg=format_signal(sig,asset_info,interval,acc,rp,rr)
                 await query.message.reply_text(msg,parse_mode="HTML",reply_markup=kb)
+
+                # 2) Phir chart bhejo
                 chart_buf=generate_chart(pair,interval,sig)
-                if chart_buf: await query.message.reply_photo(photo=chart_buf,caption=chart_cap(sig,asset_info,interval),parse_mode="HTML")
+                if chart_buf:
+                    await query.message.reply_photo(photo=chart_buf,caption=chart_cap(sig,asset_info,interval),parse_mode="HTML")
+
                 add_user_signal(uid,sig)
                 signal_history.append({"pair":pair,"direction":sig['direction'],"confidence":sig['confidence'],"time":datetime.now().strftime('%d %b | %H:%M')})
                 daily_stats["total"]+=1
-                # Add to auto-check
                 pending_checks.append({"signal":sig,"uids":[uid],"check_after":time.time()+900,"created_at":time.time()})
-                found=True; time.sleep(1)
+                found=True; time.sleep(0.5)
         if not found:
             await query.message.reply_text(f"『 📊 <b>NO SIGNAL</b> 📊 』\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n⚠️ No strong signals on <b>{tf.get('label')}</b>.\n💡 Try another timeframe!\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n🚀 @PipAlertProSignals",parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Try Again",callback_data="get_signals"),InlineKeyboardButton("🏠 Menu",callback_data="go_back")]]))
