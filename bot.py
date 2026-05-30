@@ -18,6 +18,7 @@ import asyncio
 TELEGRAM_TOKEN     = os.environ.get("TELEGRAM_TOKEN")
 CHANNEL_ID         = "@PipAlertProSignals"
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY")
+ANTHROPIC_API_KEY  = os.environ.get("ANTHROPIC_API_KEY")
 SUPPORT_CHAT_ID    = os.environ.get("SUPPORT_CHAT_ID", "")
 
 logging.basicConfig(level=logging.INFO)
@@ -390,7 +391,48 @@ def generate_chart(pair, interval, signal):
 
 # ─── INDICATORS ──────────────────────────────────────────────────
 
-def get_forex_data(pair, interval="15min"):
+def get_claude_analysis(sig, asset_info):
+    """Get AI analysis from Claude for the signal"""
+    if not ANTHROPIC_API_KEY:
+        return None
+    try:
+        prompt = f"""You are an expert forex and crypto trading analyst. Analyze this trading signal and give a brief, professional market commentary in 3-4 sentences. Be direct and confident. Focus on WHY this signal makes sense and what traders should watch out for.
+
+Signal Data:
+- Asset: {asset_info['name']} ({sig['pair']})
+- Direction: {sig['direction']}
+- Entry: ${sig['price']}
+- Stop Loss: ${sig['sl']}
+- TP1: ${sig['tp1']} | TP2: ${sig['tp2']}
+- RSI: {sig['rsi']} ({sig['rsi_txt']})
+- MACD: {sig['macd_txt']}
+- Trend: {sig['ma_txt']}
+- Bollinger: {sig['bb_txt']}
+- Confidence: {sig['confidence']}%
+
+Write only the analysis, no headers or labels. Keep it under 60 words."""
+
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 150,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=15
+        )
+        data = response.json()
+        if "content" in data and len(data["content"]) > 0:
+            return data["content"][0]["text"].strip()
+        return None
+    except Exception as e:
+        logger.error(f"Claude API error: {e}")
+        return None
     params={"symbol":pair,"interval":interval,"outputsize":60,"apikey":TWELVEDATA_API_KEY}
     try:
         r=requests.get("https://api.twelvedata.com/time_series",params=params,timeout=10)
@@ -459,7 +501,7 @@ def get_signal(pair,interval="15min"):
 
 # ─── FORMATTERS ──────────────────────────────────────────────────
 
-def format_signal(sig,asset_info,interval="15min",account=None,risk_pct=None,rr_ratio=None):
+def format_signal(sig, asset_info, interval="15min", account=None, risk_pct=None, rr_ratio=None):
     now=datetime.now().strftime('%d %b %Y  •  %H:%M UTC')
     conf=sig['confidence']; bar="█"*int(conf/10)+"░"*(10-int(conf/10))
     tf=TIMEFRAMES.get(interval,{})
@@ -472,6 +514,13 @@ def format_signal(sig,asset_info,interval="15min",account=None,risk_pct=None,rr_
     if account and risk_pct and rr_ratio:
         r=round(account*risk_pct/100,2); rw=round(r*rr_ratio,2)
         risk_block=f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n💼 <b>RISK MANAGEMENT</b>\n├ 💰 Account  ➤ <code>${account:,.2f}</code>\n├ ⚡ Risk ({risk_pct}%) ➤ <code>-${r:,.2f}</code>\n├ 🎯 Reward 1:{rr_ratio} ➤ <code>+${rw:,.2f}</code>\n└ 📐 R:R     ➤ 1:{rr_ratio}"
+
+    # Claude AI Analysis
+    ai_block = ""
+    ai_analysis = get_claude_analysis(sig, asset_info)
+    if ai_analysis:
+        ai_block = f"▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n🤖 <b>AI ANALYSIS</b>\n<i>{ai_analysis}</i>"
+
     return f"""『 👑 <b>PIPALERT PRO</b> 👑 』
 ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰
 🚨 <b>{hdr}</b>
@@ -492,6 +541,7 @@ def format_signal(sig,asset_info,interval="15min",account=None,risk_pct=None,rr_
 ├ {sig['macd_txt']}
 ├ {sig['ma_txt']}
 └ {sig['bb_txt']}
+{ai_block}
 ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰
 📊 <b>Confidence:</b> {conf}%
 <code>{bar}</code>
