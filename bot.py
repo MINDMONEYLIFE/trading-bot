@@ -209,89 +209,196 @@ def get_tv_link(pair, interval):
 
 # ─── CHART GENERATOR ─────────────────────────────────────────────
 
+def is_market_open(pair):
+    """Check if market is open — Crypto 24/7, Forex/Gold closed on weekends"""
+    crypto_pairs = ["BTC/USD", "ETH/USD"]
+    if pair in crypto_pairs:
+        return True  # Crypto always open
+    # Forex/Gold: closed Saturday & Sunday
+    now = datetime.utcnow()
+    weekday = now.weekday()  # 0=Mon, 5=Sat, 6=Sun
+    if weekday >= 5:
+        return False
+    return True
+
 def generate_chart(pair, interval, signal):
     try:
         params = {"symbol":pair,"interval":interval,"outputsize":50,"apikey":TWELVEDATA_API_KEY}
         r    = requests.get("https://api.twelvedata.com/time_series", params=params, timeout=15)
         data = r.json()
         if "values" not in data: return None
-        vals = list(reversed(data["values"][:40]))
+        vals = list(reversed(data["values"][:50]))
         df   = pd.DataFrame(vals)
         df["datetime"] = pd.to_datetime(df["datetime"])
         df.set_index("datetime", inplace=True)
         for col in ["open","high","low","close"]:
             if col in df.columns: df[col] = df[col].astype(float)
-        if len(df)>=20:
-            df["ma20"]  = df["close"].rolling(20).mean()
-            df["std"]   = df["close"].rolling(20).std()
-            df["bb_up"] = df["ma20"]+2*df["std"]
-            df["bb_lo"] = df["ma20"]-2*df["std"]
-        delta=df["close"].diff(); gain=delta.clip(lower=0).rolling(14).mean()
-        loss=(-delta.clip(upper=0)).rolling(14).mean(); df["rsi"]=100-(100/(1+gain/loss))
 
-        fig=plt.figure(figsize=(12,7),facecolor="#0d1117")
-        gs=fig.add_gridspec(2,1,height_ratios=[3,1],hspace=0.06)
-        ax1=fig.add_subplot(gs[0]); ax2=fig.add_subplot(gs[1])
-        for ax in [ax1,ax2]:
-            ax.set_facecolor("#0d1117"); ax.tick_params(colors="#8b949e",labelsize=7)
-            for sp in ax.spines.values(): sp.set_color("#21262d")
-        x=list(range(len(df)))
-        for i,(_,row) in enumerate(df.iterrows()):
-            color="#26a641" if row["close"]>=row["open"] else "#f85149"
-            ax1.plot([i,i],[row["low"],row["high"]],color=color,linewidth=0.8,zorder=2)
-            ax1.bar(i,abs(row["close"]-row["open"]),bottom=min(row["open"],row["close"]),
-                    color=color,width=0.6,alpha=0.9,zorder=3)
-        if "bb_up" in df.columns:
-            ax1.plot(x,df["bb_up"],color="#58a6ff",linewidth=0.8,linestyle="--",alpha=0.7,label="BB Upper")
-            ax1.plot(x,df["ma20"], color="#d29922",linewidth=0.9,alpha=0.8,label="MA20")
-            ax1.plot(x,df["bb_lo"],color="#58a6ff",linewidth=0.8,linestyle="--",alpha=0.7,label="BB Lower")
-            ax1.fill_between(x,df["bb_up"],df["bb_lo"],alpha=0.04,color="#58a6ff")
-        # ── Y-axis: tight around candles ──
+        # ── Indicators ──
+        if len(df) >= 20:
+            df["ma20"]  = df["close"].rolling(20).mean()
+            df["ma9"]   = df["close"].rolling(9).mean()
+            df["std"]   = df["close"].rolling(20).std()
+            df["bb_up"] = df["ma20"] + 2*df["std"]
+            df["bb_lo"] = df["ma20"] - 2*df["std"]
+        delta = df["close"].diff()
+        gain  = delta.clip(lower=0).rolling(14).mean()
+        loss  = (-delta.clip(upper=0)).rolling(14).mean()
+        df["rsi"] = 100 - (100 / (1 + gain / loss))
+
+        # ── Layout ──
+        BG    = "#131722"   # TradingView dark bg
+        GRID  = "#1e222d"
+        TEXT  = "#b2b5be"
+        GREEN = "#26a69a"
+        RED   = "#ef5350"
+        BLUE  = "#2962ff"
+        GOLD  = "#ffa500"
+        WHITE = "#d1d4dc"
+
+        fig = plt.figure(figsize=(14, 8), facecolor=BG)
+        gs  = fig.add_gridspec(3, 1, height_ratios=[4, 1, 1.2], hspace=0)
+        ax1 = fig.add_subplot(gs[0])   # Candles
+        ax2 = fig.add_subplot(gs[1])   # MACD-style (close diff)
+        ax3 = fig.add_subplot(gs[2])   # RSI
+
+        for ax in [ax1, ax2, ax3]:
+            ax.set_facecolor(BG)
+            ax.tick_params(colors=TEXT, labelsize=7, length=2)
+            for sp in ax.spines.values():
+                sp.set_color(GRID)
+            ax.yaxis.set_label_position("right")
+            ax.yaxis.tick_right()
+            ax.grid(True, color=GRID, linewidth=0.4, alpha=0.6)
+
+        x = list(range(len(df)))
+
+        # ── Candlesticks ──
         candle_min = df["low"].min()
         candle_max = df["high"].max()
-        padding    = (candle_max - candle_min) * 0.15
-        y_min      = candle_min - padding
-        y_max      = candle_max + padding
+        rng        = candle_max - candle_min
+        pad        = rng * 0.12
+
+        for i, (_, row) in enumerate(df.iterrows()):
+            is_bull = row["close"] >= row["open"]
+            body_color  = GREEN if is_bull else RED
+            wick_color  = GREEN if is_bull else RED
+            body_h = max(abs(row["close"] - row["open"]), rng * 0.001)
+            body_b = min(row["open"], row["close"])
+            # Wick
+            ax1.plot([i, i], [row["low"], row["high"]],
+                     color=wick_color, linewidth=0.9, zorder=2, solid_capstyle="round")
+            # Body
+            rect = plt.Rectangle((i - 0.35, body_b), 0.7, body_h,
+                                  color=body_color, alpha=0.9, zorder=3)
+            ax1.add_patch(rect)
+
+        # ── Bollinger Bands ──
+        if "bb_up" in df.columns:
+            ax1.plot(x, df["bb_up"], color="#5d9cf5", linewidth=0.8,
+                     linestyle="--", alpha=0.6, label="BB Upper")
+            ax1.plot(x, df["ma20"],  color=GOLD,     linewidth=1.0,
+                     alpha=0.8, label="MA20")
+            ax1.plot(x, df["bb_lo"], color="#5d9cf5", linewidth=0.8,
+                     linestyle="--", alpha=0.6, label="BB Lower")
+            ax1.fill_between(x, df["bb_up"], df["bb_lo"],
+                             alpha=0.03, color="#5d9cf5")
+        if "ma9" in df.columns:
+            ax1.plot(x, df["ma9"], color="#ff6d00", linewidth=0.7,
+                     alpha=0.7, label="MA9")
+
+        # ── Y-axis tight around candles ──
+        y_min = candle_min - pad
+        y_max = candle_max + pad
         ax1.set_ylim(y_min, y_max)
+        ax1.set_xlim(-1, len(df) + 4)
 
-        rng=candle_max-candle_min; off=rng*0.01; last=len(df)-1
+        # ── Entry / SL / TP lines ──
+        last = len(df) - 1
+        off  = rng * 0.008
+        levels = [
+            (signal["price"], GREEN,    "-",  1.4, f"ENTRY  ${signal['price']}"),
+            (signal["sl"],    RED,      "--", 1.1, f"SL  ${signal['sl']}"),
+            (signal["tp1"],   "#00bcd4",":",  1.0, f"TP1  ${signal['tp1']}"),
+            (signal["tp2"],   "#00bcd4",":",  0.8, f"TP2  ${signal['tp2']}"),
+        ]
+        for price, color, ls, lw, label in levels:
+            ax1.axhline(price, color=color, linewidth=lw,
+                        linestyle=ls, alpha=0.9, zorder=5)
+            # Label on right side
+            y_pos = price + off if price >= signal["price"] else price - off
+            va    = "bottom" if price >= signal["price"] else "top"
+            ax1.text(len(df) + 0.3, price, label,
+                     color=color, fontsize=7.5, va="center",
+                     fontweight="bold",
+                     bbox=dict(boxstyle="round,pad=0.2", facecolor=BG,
+                               edgecolor=color, alpha=0.8, linewidth=0.5))
 
-        # Draw Entry/SL/TP only if within visible range
-        all_levels = {
-            "entry": (signal["price"], "#3fb950", "-",  1.2, f" Entry ${signal['price']}"),
-            "sl":    (signal["sl"],    "#f85149", "--", 1.0, f" SL ${signal['sl']}"),
-            "tp1":   (signal["tp1"],   "#58a6ff", ":",  1.0, f" TP1 ${signal['tp1']}"),
-            "tp2":   (signal["tp2"],   "#58a6ff", ":",  0.8, f" TP2 ${signal['tp2']}"),
-        }
-        for key,(price,color,ls,lw,label) in all_levels.items():
-            ax1.axhline(price,color=color,linewidth=lw,linestyle=ls,alpha=0.85,zorder=4)
-            if y_min <= price <= y_max:
-                ax1.text(last+0.5,price+off,label,color=color,fontsize=7,va="bottom")
-        tf_label=TIMEFRAMES.get(interval,{}).get("label",interval)
-        dc="#3fb950" if signal["direction"]=="BUY" else "#f85149"
-        ax1.set_title(f"  {ASSETS.get(pair,{}).get('emoji','')} {ASSETS.get(pair,{}).get('name',pair)} ({pair})  •  {tf_label}  •  ▶ {signal['direction']}",
-                      color=dc,fontsize=11,fontweight="bold",loc="left",pad=8)
-        ax1.legend(fontsize=7,loc="upper left",facecolor="#161b22",edgecolor="#21262d",labelcolor="#8b949e")
-        ax1.set_xticks([]); ax1.set_ylabel("Price",color="#8b949e",fontsize=8)
-        ax1.yaxis.set_label_position("right"); ax1.yaxis.tick_right()
-        ax2.plot(x,df["rsi"],color="#d2a8ff",linewidth=1.0)
-        ax2.axhline(70,color="#f85149",linewidth=0.5,linestyle="--",alpha=0.5)
-        ax2.axhline(30,color="#3fb950",linewidth=0.5,linestyle="--",alpha=0.5)
-        ax2.axhline(50,color="#8b949e",linewidth=0.4,linestyle=":", alpha=0.4)
-        ax2.fill_between(x,df["rsi"],70,where=df["rsi"]>=70,alpha=0.12,color="#f85149")
-        ax2.fill_between(x,df["rsi"],30,where=df["rsi"]<=30,alpha=0.12,color="#3fb950")
-        ax2.set_ylim(0,100); ax2.set_yticks([30,50,70])
-        ax2.set_ylabel("RSI",color="#8b949e",fontsize=8)
-        ax2.yaxis.set_label_position("right"); ax2.yaxis.tick_right()
-        step=max(1,len(df)//6)
-        ax2.set_xticks(range(0,len(df),step))
-        ax2.set_xticklabels([df.index[i].strftime("%H:%M") for i in range(0,len(df),step)],fontsize=6,color="#8b949e")
-        fig.text(0.99,0.01,"@PipAlertProSignals",ha="right",va="bottom",color="#21262d",fontsize=8,style="italic")
-        plt.tight_layout(pad=0.4)
-        buf=BytesIO(); plt.savefig(buf,format="png",dpi=120,bbox_inches="tight",facecolor="#0d1117")
-        buf.seek(0); plt.close(fig); return buf
+        # ── Title bar ──
+        tf_label  = TIMEFRAMES.get(interval, {}).get("label", interval)
+        asset     = ASSETS.get(pair, {})
+        dir_color = GREEN if signal["direction"] == "BUY" else RED
+        dir_label = "▲ BUY" if signal["direction"] == "BUY" else "▼ SELL"
+        ax1.set_title(
+            f"  {asset.get('emoji','')} {asset.get('name', pair)}  ({pair})   |   {tf_label}   |   {dir_label}   |   Conf: {signal['confidence']}%",
+            color=dir_color, fontsize=10.5, fontweight="bold",
+            loc="left", pad=10,
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#1e222d",
+                      edgecolor=dir_color, alpha=0.9, linewidth=0.8))
+
+        legend = ax1.legend(fontsize=7, loc="upper left",
+                            facecolor="#1e222d", edgecolor=GRID,
+                            labelcolor=TEXT, framealpha=0.9)
+        ax1.set_xticks([])
+        ax1.set_ylabel("Price", color=TEXT, fontsize=8)
+
+        # ── Momentum (close diff) ──
+        diff = df["close"].diff()
+        colors_diff = [GREEN if v >= 0 else RED for v in diff]
+        ax2.bar(x, diff, color=colors_diff, width=0.7, alpha=0.7)
+        ax2.axhline(0, color=GRID, linewidth=0.5)
+        ax2.set_ylabel("Δ", color=TEXT, fontsize=8)
+        ax2.set_xticks([])
+
+        # ── RSI ──
+        ax3.plot(x, df["rsi"], color="#ce93d8", linewidth=1.1)
+        ax3.axhline(70, color=RED,   linewidth=0.6, linestyle="--", alpha=0.6)
+        ax3.axhline(30, color=GREEN, linewidth=0.6, linestyle="--", alpha=0.6)
+        ax3.axhline(50, color=GRID,  linewidth=0.4, linestyle=":",  alpha=0.5)
+        ax3.fill_between(x, df["rsi"], 70, where=df["rsi"] >= 70,
+                         alpha=0.15, color=RED)
+        ax3.fill_between(x, df["rsi"], 30, where=df["rsi"] <= 30,
+                         alpha=0.15, color=GREEN)
+        ax3.set_ylim(0, 100)
+        ax3.set_yticks([30, 50, 70])
+        ax3.set_ylabel("RSI", color=TEXT, fontsize=8)
+
+        # ── X-axis time labels ──
+        step = max(1, len(df) // 7)
+        ax3.set_xticks(range(0, len(df), step))
+        ax3.set_xticklabels(
+            [df.index[i].strftime("%H:%M") for i in range(0, len(df), step)],
+            fontsize=6.5, color=TEXT)
+
+        # ── Timestamp + watermark ──
+        now_str = datetime.utcnow().strftime("%d %b %Y  %H:%M UTC")
+        fig.text(0.01, 0.01, f"PipAlert Pro  •  {now_str}",
+                 color="#4a4e5a", fontsize=7, va="bottom")
+        fig.text(0.99, 0.01, "@PipAlertProSignals",
+                 ha="right", va="bottom", color="#4a4e5a",
+                 fontsize=7.5, style="italic")
+
+        plt.tight_layout(pad=0.3)
+        buf = BytesIO()
+        plt.savefig(buf, format="png", dpi=130,
+                    bbox_inches="tight", facecolor=BG)
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+
     except Exception as e:
-        logger.error(f"Chart error: {e}"); return None
+        logger.error(f"Chart error: {e}")
+        return None
 
 # ─── INDICATORS ──────────────────────────────────────────────────
 
@@ -451,6 +558,9 @@ def check_and_send_signals():
     print(f"[{datetime.now().strftime('%H:%M')}] Scanning...")
     sent=0
     for pair,asset_info in ASSETS.items():
+        if not is_market_open(pair):
+            print(f"Market closed for {pair} (weekend)")
+            continue
         sig=get_signal(pair,"15min")
         if sig:
             key=f"{pair}_{sig['direction']}"
@@ -719,6 +829,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pairs=[(selected,ASSETS[selected])] if selected!="ALL" and selected in ASSETS else list(ASSETS.items())
         found=False
         for pair,asset_info in pairs:
+            if not is_market_open(pair):
+                await query.message.reply_text(
+                    f"『 🔴 <b>MARKET CLOSED</b> 🔴 』\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n⚠️ <b>{asset_info['name']}</b> market is currently closed.\n\n📅 Forex & Gold: Mon–Fri only\n₿ Crypto (BTC/ETH): 24/7 open\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n💡 Try BTC or ETH signals instead!\n🚀 @PipAlertProSignals",
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("₿ Try BTC",callback_data="asset_BTC/USD"),InlineKeyboardButton("💎 Try ETH",callback_data="asset_ETH/USD")],[InlineKeyboardButton("🏠 Menu",callback_data="go_back")]]))
+                continue
             sig=get_signal(pair,interval)
             if sig:
                 msg=format_signal(sig,asset_info,interval,acc,rp,rr)
